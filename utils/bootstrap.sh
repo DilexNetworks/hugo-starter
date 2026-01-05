@@ -6,13 +6,15 @@ set -euo pipefail
 # Does not modify hugo-starter itself.
 
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/DilexNetworks/hugo-starter/main/utils/bootstrap.sh | bash -s -- my-new-site
+#   curl -fsSL \
+#     https://raw.githubusercontent.com/DilexNetworks/hugo-starter/main/utils/bootstrap.sh \
+#     | bash -s -- my-new-site
 #
 # Optional env vars:
 #   ORG=...                      (default: DilexNetworks)
 #   STARTER_REPO=...             (default: hugo-starter)
 #   CORE_TOOLING_REPO=...        (default: core-tooling)
-#   STARTER_REF=main             (branch/tag; default: main)
+#   STARTER_REF=...              (branch/tag/SHA; default: latest release tag)
 #   TOOLING_TAG=v0.1.1           (override latest release tag)
 
 TARGET_DIR="${1:-}"
@@ -24,7 +26,7 @@ fi
 ORG="${ORG:-DilexNetworks}"
 STARTER_REPO="${STARTER_REPO:-hugo-starter}"
 CORE_TOOLING_REPO="${CORE_TOOLING_REPO:-core-tooling}"
-STARTER_REF="${STARTER_REF:-main}"
+STARTER_REF="${STARTER_REF:-}"
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "❌ Missing required command: $1" >&2; exit 2; }; }
 
@@ -49,6 +51,41 @@ print(tag)
 PY "${repo}"
 }
 
+github_commit_sha() {
+  local repo="$1"  # e.g. DilexNetworks/core-tooling
+  local ref="$2"   # tag, branch, or sha
+  python3 - <<'PY'
+import json, sys, urllib.request
+repo, ref = sys.argv[1], sys.argv[2]
+url = f"https://api.github.com/repos/{repo}/commits/{ref}"
+req = urllib.request.Request(
+    url,
+    headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "hugo-starter-bootstrap",
+    },
+)
+with urllib.request.urlopen(req) as r:
+    data = json.load(r)
+sha = data.get("sha")
+if not sha:
+    raise SystemExit(f"No sha found for {repo}@{ref}")
+print(sha)
+PY "${repo}" "${ref}"
+}
+
+# Resolve starter ref (latest release unless overridden)
+if [[ -z "${STARTER_REF}" ]]; then
+  echo "→ Resolving latest release for ${ORG}/${STARTER_REPO}"
+  if STARTER_REF="$(latest_release_tag "${ORG}/${STARTER_REPO}")"; then
+    :
+  else
+    echo "ℹ️  No releases found for ${ORG}/${STARTER_REPO}; falling back to 'main'"
+    STARTER_REF="main"
+  fi
+fi
+echo "→ Using starter ref: ${STARTER_REF}"
+
 # Resolve tooling tag (latest release unless overridden)
 TOOLING_TAG="${TOOLING_TAG:-}"
 if [[ -z "${TOOLING_TAG}" ]]; then
@@ -56,6 +93,8 @@ if [[ -z "${TOOLING_TAG}" ]]; then
   TOOLING_TAG="$(latest_release_tag "${ORG}/${CORE_TOOLING_REPO}")"
 fi
 echo "→ Using core-tooling tag: ${TOOLING_TAG}"
+TOOLING_SHA="$(github_commit_sha "${ORG}/${CORE_TOOLING_REPO}" "${TOOLING_TAG}")"
+echo "→ core-tooling commit: ${TOOLING_SHA}"
 
 # Create target directory
 if [[ -e "${TARGET_DIR}" ]]; then
@@ -69,6 +108,8 @@ echo "→ Fetching starter: ${ORG}/${STARTER_REPO}@${STARTER_REF}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 git clone --depth 1 --single-branch --branch "${STARTER_REF}" "https://github.com/${ORG}/${STARTER_REPO}.git" "${tmp}/starter"
+STARTER_SHA="$(git -C "${tmp}/starter" rev-parse HEAD)"
+echo "→ starter commit: ${STARTER_SHA}"
 
 # Copy starter content into target (exclude .git)
 rsync -a --exclude .git "${tmp}/starter/" .
@@ -86,6 +127,27 @@ chmod +x scripts/install-tooling.sh
 # Optional updater
 curl -fsSL "${RAW_BASE}/scripts/update-tooling.sh" -o scripts/update-tooling.sh || true
 chmod +x scripts/update-tooling.sh || true
+
+# Write a provenance manifest for the generated repo
+GENERATED_AT="$(date -Iseconds)"
+cat > CORE_MANIFEST.toml <<EOF
+schema = "core.manifest/v1"
+generated_at = "${GENERATED_AT}"
+
+[components.hugo_starter]
+repo = "${ORG}/${STARTER_REPO}"
+ref = "${STARTER_REF}"
+commit = "${STARTER_SHA}"
+resolved_ref = "${STARTER_REF}"
+bootstrap_script = "utils/bootstrap.sh"
+copied_paths = ["site/"]
+
+[components.core_tooling]
+repo = "${ORG}/${CORE_TOOLING_REPO}"
+tag = "${TOOLING_TAG}"
+commit = "${TOOLING_SHA}"
+installed_to = "tooling/"
+EOF
 
 # Write a minimal root Makefile if the starter didn’t include one
 if [[ ! -f Makefile ]]; then
