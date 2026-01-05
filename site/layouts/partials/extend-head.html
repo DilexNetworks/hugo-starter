@@ -1,0 +1,6 @@
+{{/* hugo-starter: extend-head hook (Blowfish compatible)
+     If the shortcodes/module provides extra head assets, include them here. */}}
+
+{{- if templates.Exists "partials/core-shortcodes/extend-head.html" -}}
+  {{- partial "core-shortcodes/extend-head.html" . -}}
+{{- end -}}
