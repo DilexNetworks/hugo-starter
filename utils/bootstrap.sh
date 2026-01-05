@@ -38,7 +38,7 @@ need_cmd make
 
 latest_release_tag() {
   local repo="$1"
-  python3 - <<PY
+  python3 - "${repo}" <<'PY'
 import json, sys, urllib.request
 url = f"https://api.github.com/repos/{sys.argv[1]}/releases/latest"
 req = urllib.request.Request(url, headers={"Accept":"application/vnd.github+json","User-Agent":"hugo-starter-bootstrap"})
@@ -48,13 +48,13 @@ tag = data.get("tag_name")
 if not tag:
     raise SystemExit("No tag_name found in latest release response")
 print(tag)
-PY "${repo}"
+PY
 }
 
 github_commit_sha() {
   local repo="$1"  # e.g. DilexNetworks/core-tooling
   local ref="$2"   # tag, branch, or sha
-  python3 - <<'PY'
+  python3 - "${repo}" "${ref}" <<'PY'
 import json, sys, urllib.request
 repo, ref = sys.argv[1], sys.argv[2]
 url = f"https://api.github.com/repos/{repo}/commits/{ref}"
@@ -71,7 +71,7 @@ sha = data.get("sha")
 if not sha:
     raise SystemExit(f"No sha found for {repo}@{ref}")
 print(sha)
-PY "${repo}" "${ref}"
+PY
 }
 
 # Resolve starter ref (latest release unless overridden)
