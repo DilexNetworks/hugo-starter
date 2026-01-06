@@ -39,14 +39,34 @@ need_cmd make
 latest_release_tag() {
   local repo="$1"
   python3 - "${repo}" <<'PY'
-import json, sys, urllib.request
-url = f"https://api.github.com/repos/{sys.argv[1]}/releases/latest"
-req = urllib.request.Request(url, headers={"Accept":"application/vnd.github+json","User-Agent":"hugo-starter-bootstrap"})
-with urllib.request.urlopen(req) as r:
-    data = json.load(r)
+import json
+import sys
+import urllib.request
+import urllib.error
+
+repo = sys.argv[1]
+url = f"https://api.github.com/repos/{repo}/releases/latest"
+req = urllib.request.Request(
+    url,
+    headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "hugo-starter-bootstrap",
+    },
+)
+
+try:
+    with urllib.request.urlopen(req) as r:
+        data = json.load(r)
+except urllib.error.HTTPError:
+    # Common case: 404 when the repo has no GitHub Releases.
+    # Exit non-zero so the bash caller can fall back cleanly.
+    sys.exit(1)
+except Exception:
+    sys.exit(1)
+
 tag = data.get("tag_name")
 if not tag:
-    raise SystemExit("No tag_name found in latest release response")
+    sys.exit(1)
 print(tag)
 PY
 }
@@ -55,7 +75,11 @@ github_commit_sha() {
   local repo="$1"  # e.g. DilexNetworks/core-tooling
   local ref="$2"   # tag, branch, or sha
   python3 - "${repo}" "${ref}" <<'PY'
-import json, sys, urllib.request
+import json
+import sys
+import urllib.request
+import urllib.error
+
 repo, ref = sys.argv[1], sys.argv[2]
 url = f"https://api.github.com/repos/{repo}/commits/{ref}"
 req = urllib.request.Request(
@@ -65,11 +89,18 @@ req = urllib.request.Request(
         "User-Agent": "hugo-starter-bootstrap",
     },
 )
-with urllib.request.urlopen(req) as r:
-    data = json.load(r)
+
+try:
+    with urllib.request.urlopen(req) as r:
+        data = json.load(r)
+except urllib.error.HTTPError:
+    sys.exit(1)
+except Exception:
+    sys.exit(1)
+
 sha = data.get("sha")
 if not sha:
-    raise SystemExit(f"No sha found for {repo}@{ref}")
+    sys.exit(1)
 print(sha)
 PY
 }
