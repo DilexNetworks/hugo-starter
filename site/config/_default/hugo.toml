@@ -7,11 +7,13 @@ enableRobotsTXT = true
 [module]
   [[module.imports]]
     path = "github.com/nunocoracao/blowfish/v2"
+    version = "v2.96.0"
 
   # Shortcodes module (rename to the actual repo path once you rename it)
   [[module.imports]]
     path = "github.com/DilexNetworks/core-hugo-shortcodes/module"
-    # If you want to pin versions later, do it via go.mod / hugo mod commands.
+    version = "v1.1.0"
+    # Update pinned module versions with: make modules_update (then commit go.mod/go.sum)
 
 [params]
   description = "A Hugo starter site."
