@@ -4,6 +4,7 @@
 site/public/
 site/resources/
 site/.hugo_cache/
+.hugo_build.lock
 
 # Hugo module / Go caches (if ever generated locally)
 **/go.sum
