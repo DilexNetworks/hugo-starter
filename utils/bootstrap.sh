@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+trap 'echo "❌ Bootstrap failed at line ${LINENO}; see the error above." >&2' ERR
 
 # hugo-starter bootstrap script
 # Creates a new Hugo site repo based on this starter.
@@ -36,73 +37,27 @@ need_cmd python3
 need_cmd rsync
 need_cmd make
 
+# GitHub CLI shares authentication across metadata, script downloads, and the
+# core-tooling installer. Anonymous GitHub requests return 404 for private repos.
+need_cmd gh
+if ! gh api --hostname github.com "repos/${ORG}/${CORE_TOOLING_REPO}" >/dev/null; then
+  echo "❌ Cannot access ${ORG}/${CORE_TOOLING_REPO}. Run 'gh auth login --hostname github.com' with an account that has repository access (and authorize organization SSO if required)." >&2
+  exit 1
+fi
+
 latest_release_tag() {
-  local repo="$1"
-  python3 - "${repo}" <<'PY'
-import json
-import sys
-import urllib.request
-import urllib.error
-
-repo = sys.argv[1]
-url = f"https://api.github.com/repos/{repo}/releases/latest"
-req = urllib.request.Request(
-    url,
-    headers={
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "hugo-starter-bootstrap",
-    },
-)
-
-try:
-    with urllib.request.urlopen(req) as r:
-        data = json.load(r)
-except urllib.error.HTTPError:
-    # Common case: 404 when the repo has no GitHub Releases.
-    # Exit non-zero so the bash caller can fall back cleanly.
-    sys.exit(1)
-except Exception:
-    sys.exit(1)
-
-tag = data.get("tag_name")
-if not tag:
-    sys.exit(1)
-print(tag)
-PY
+  gh api --hostname github.com "repos/$1/releases/latest" --jq .tag_name
 }
 
 github_commit_sha() {
-  local repo="$1"  # e.g. DilexNetworks/core-tooling
-  local ref="$2"   # tag, branch, or sha
-  python3 - "${repo}" "${ref}" <<'PY'
-import json
-import sys
-import urllib.request
-import urllib.error
+  local encoded_ref
+  encoded_ref="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$2")"
+  gh api --hostname github.com "repos/$1/commits/${encoded_ref}" --jq .sha
+}
 
-repo, ref = sys.argv[1], sys.argv[2]
-url = f"https://api.github.com/repos/{repo}/commits/{ref}"
-req = urllib.request.Request(
-    url,
-    headers={
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "hugo-starter-bootstrap",
-    },
-)
-
-try:
-    with urllib.request.urlopen(req) as r:
-        data = json.load(r)
-except urllib.error.HTTPError:
-    sys.exit(1)
-except Exception:
-    sys.exit(1)
-
-sha = data.get("sha")
-if not sha:
-    sys.exit(1)
-print(sha)
-PY
+github_file() {
+  gh api --hostname github.com --method GET "repos/${ORG}/${CORE_TOOLING_REPO}/contents/$1" \
+    -f "ref=${TOOLING_TAG}" -H 'Accept: application/vnd.github.raw+json'
 }
 
 # Resolve starter ref (latest release unless overridden)
@@ -111,7 +66,7 @@ if [[ -z "${STARTER_REF}" ]]; then
   if STARTER_REF="$(latest_release_tag "${ORG}/${STARTER_REPO}")"; then
     :
   else
-    echo "ℹ️  No releases found for ${ORG}/${STARTER_REPO}; falling back to 'main'"
+    echo "ℹ️  Could not resolve latest release for ${ORG}/${STARTER_REPO}; falling back to 'main'"
     STARTER_REF="main"
   fi
 fi
@@ -121,7 +76,10 @@ echo "→ Using starter ref: ${STARTER_REF}"
 TOOLING_TAG="${TOOLING_TAG:-}"
 if [[ -z "${TOOLING_TAG}" ]]; then
   echo "→ Resolving latest release for ${ORG}/${CORE_TOOLING_REPO}"
-  TOOLING_TAG="$(latest_release_tag "${ORG}/${CORE_TOOLING_REPO}")"
+  if ! TOOLING_TAG="$(latest_release_tag "${ORG}/${CORE_TOOLING_REPO}")"; then
+    echo "❌ Cannot resolve a core-tooling release. Check the GitHub error above or set TOOLING_TAG to an existing tag." >&2
+    exit 1
+  fi
 fi
 echo "→ Using core-tooling tag: ${TOOLING_TAG}"
 TOOLING_SHA="$(github_commit_sha "${ORG}/${CORE_TOOLING_REPO}" "${TOOLING_TAG}")"
@@ -138,7 +96,10 @@ cd "${TARGET_DIR}"
 echo "→ Fetching starter: ${ORG}/${STARTER_REPO}@${STARTER_REF}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-git clone --depth 1 --single-branch --branch "${STARTER_REF}" "https://github.com/${ORG}/${STARTER_REPO}.git" "${tmp}/starter"
+git init -q "${tmp}/starter"
+git -C "${tmp}/starter" remote add origin "https://github.com/${ORG}/${STARTER_REPO}.git"
+git -C "${tmp}/starter" fetch --depth 1 origin "${STARTER_REF}"
+git -C "${tmp}/starter" checkout --detach -q FETCH_HEAD
 STARTER_SHA="$(git -C "${tmp}/starter" rev-parse HEAD)"
 echo "→ starter commit: ${STARTER_SHA}"
 
@@ -149,18 +110,21 @@ rsync -a --exclude .git "${tmp}/starter/" .
 mkdir -p scripts tooling
 
 # Install core-tooling into this repo
-RAW_BASE="https://raw.githubusercontent.com/${ORG}/${CORE_TOOLING_REPO}/${TOOLING_TAG}"
-echo "→ Installing core-tooling from ${RAW_BASE}"
-curl -fsSL "${RAW_BASE}/scripts/install-tooling.sh" -o scripts/install-tooling.sh
+echo "→ Installing core-tooling: ${ORG}/${CORE_TOOLING_REPO}@${TOOLING_TAG}"
+github_file scripts/install-tooling.sh > scripts/install-tooling.sh
 chmod +x scripts/install-tooling.sh
 ./scripts/install-tooling.sh "${TOOLING_TAG}"
 
 # Optional updater
-curl -fsSL "${RAW_BASE}/scripts/update-tooling.sh" -o scripts/update-tooling.sh || true
-chmod +x scripts/update-tooling.sh || true
+if github_file scripts/update-tooling.sh > scripts/update-tooling.sh; then
+  chmod +x scripts/update-tooling.sh
+else
+  rm -f scripts/update-tooling.sh
+  echo "⚠️  Optional updater could not be downloaded." >&2
+fi
 
 # Write a provenance manifest for the generated repo
-GENERATED_AT="$(date -Iseconds)"
+GENERATED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 cat > CORE_MANIFEST.toml <<EOF
 schema = "core.manifest/v1"
 generated_at = "${GENERATED_AT}"
@@ -201,13 +165,16 @@ fi
 
 # Initialize versioning files using templates (preferred)
 # If VERSION exists in starter, this is a no-op.
-make init-versioning >/dev/null 2>&1 || true
+make init-versioning
 
 # Initialize git repo (starter was copied without .git)
 git init -q
 git checkout -b main -q || true
 git add -A
-git commit -m "chore: bootstrap site from ${ORG}/${STARTER_REPO}@${STARTER_REF} + core-tooling ${TOOLING_TAG}" -q || true
+if ! git commit -m "chore: bootstrap site from ${ORG}/${STARTER_REPO}@${STARTER_REF} + core-tooling ${TOOLING_TAG}" -q; then
+  echo "❌ Files were created, but the initial commit failed. Configure Git user.name/user.email and commit in ${TARGET_DIR}." >&2
+  exit 1
+fi
 
 echo ""
 echo "✅ Created ${TARGET_DIR}"

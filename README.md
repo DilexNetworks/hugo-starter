@@ -14,13 +14,51 @@ provide:
 
 ## Quick start (recommended)
 
+The starter is public, but `DilexNetworks/core-tooling` is private. You need
+GitHub CLI (`gh`) authenticated as an account with read access to that repository.
+A public starter URL does not grant access to its private dependency.
+
+Prerequisites: Bash, Git, curl, Python 3, rsync, make, and GitHub CLI. Configure
+Git `user.name` and `user.email` for the initial commit. Authenticate once:
+
+```bash
+gh auth login --hostname github.com
+gh api repos/DilexNetworks/core-tooling --jq .full_name
+```
+
+For automation, `GH_TOKEN` may supply GitHub CLI authentication; it must have
+read access to the private repository (and organization SSO authorization if
+required). Never put a token in the download URL.
+
 Create a brand new Hugo site repo using the bootstrap script:
 
 ```bash
+set -o pipefail
 curl -fsSL \
   https://raw.githubusercontent.com/DilexNetworks/hugo-starter/main/utils/bootstrap.sh \
   | bash -s -- my-new-site
 ```
+
+`pipefail` ensures a failed script download is reported as a failed command.
+The script uses authenticated GitHub API requests for release metadata and
+installer files. The tooling installer uses `gh` to clone its release tag;
+no uploaded release assets are needed.
+
+By default the script downloads the starter's latest release (`main` is the
+fallback) and the latest tooling release. To pin versions, set variables on
+**the Bash side** of the pipe, for example:
+
+```bash
+set -o pipefail
+curl -fsSL \
+  https://raw.githubusercontent.com/DilexNetworks/hugo-starter/main/utils/bootstrap.sh \
+  | STARTER_REF=v0.1.5 TOOLING_TAG=v0.1.13 bash -s -- my-new-site
+```
+
+`STARTER_REF` accepts a branch, tag, or full commit SHA. The target must not exist.
+An inaccessible tooling repository or release stops setup with an error before
+creating the target directory. If a later step fails, inspect the error and any
+partially created directory before retrying with a fresh target.
 
 This will:
 
@@ -113,3 +151,8 @@ This repo is intentionally small. It should be easy to understand in one sitting
 ## License
 
 MIT
+
+## Bootstrap regression tests
+
+Run `python3 -m unittest discover -s tests -v` for offline tests covering private
+repository access, release lookup errors, and invalid tooling references.
